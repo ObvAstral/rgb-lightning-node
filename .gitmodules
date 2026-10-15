@@ -1,5 +1,5 @@
 [submodule "rust-lightning"]
 	path = rust-lightning
-	url = https://github.com/RGB-Tools/rust-lightning.git
+	url = git@github.com:ObvAstral/rust-lightning.git
 	branch = rgb
 	shallow = true
