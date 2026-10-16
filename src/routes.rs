@@ -2491,10 +2491,17 @@ pub(crate) async fn keysend(
         };
 
         let route_params = RouteParameters::from_payment_params_and_value(
-            PaymentParameters::for_keysend(dest_pubkey, 40, false),
+            PaymentParameters::for_keysend(dest_pubkey, 40, rgb_payment.is_some()),
             amt_msat,
             rgb_payment,
         );
+        let recipient_onion = if rgb_payment.is_some() {
+            RecipientOnionFields::secret_only(PaymentSecret(
+                unlocked_state.keys_manager.get_secure_random_bytes(),
+            ))
+        } else {
+            RecipientOnionFields::spontaneous_empty()
+        };
         let created_at = get_current_timestamp();
         unlocked_state.add_outbound_payment(
             payment_id,
@@ -2509,6 +2516,7 @@ pub(crate) async fn keysend(
                 expires_at: None,
                 description: None,
                 description_hash: None,
+                rgb_payment,
             },
         )?;
         if let Some((contract_id, rgb_amount)) = rgb_payment {
@@ -2524,7 +2532,7 @@ pub(crate) async fn keysend(
 
         let status = match unlocked_state.channel_manager.send_spontaneous_payment(
             Some(payment_preimage),
-            RecipientOnionFields::spontaneous_empty(),
+            recipient_onion,
             payment_id,
             route_params,
             Retry::Timeout(Duration::from_secs(10)),
@@ -3043,6 +3051,7 @@ pub(crate) async fn ln_invoice(
                 expires_at: Some(created_at + payload.expiry_sec as u64),
                 description,
                 description_hash,
+                rgb_payment: contract_id.zip(payload.asset_amount),
             },
         );
 
@@ -4075,6 +4084,7 @@ pub(crate) async fn send_payment(
                     expires_at: None,
                     description: None,
                     description_hash: None,
+                    rgb_payment: None,
                 },
             )?;
 
@@ -4170,6 +4180,7 @@ pub(crate) async fn send_payment(
                     expires_at: None,
                     description,
                     description_hash,
+                    rgb_payment,
                 },
             )?;
             let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());
@@ -4217,6 +4228,19 @@ pub(crate) async fn send_payment(
         }))
     })
     .await
+}
+
+#[cfg(test)]
+pub(crate) async fn test_timer_tick(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<EmptyResponse>, APIError> {
+    let guard = state.check_unlocked().await?;
+    guard
+        .as_ref()
+        .unwrap()
+        .channel_manager
+        .timer_tick_occurred();
+    Ok(Json(EmptyResponse {}))
 }
 
 pub(crate) async fn send_rgb(

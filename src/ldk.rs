@@ -17,7 +17,7 @@ use lightning::events::{Event, PaymentFailureReason, PaymentPurpose, ReplayEvent
 use lightning::impl_writeable_tlv_based;
 use lightning::ln::channelmanager::{self, PaymentId, RecentPaymentDetails};
 use lightning::ln::channelmanager::{
-    ChainParameters, ChannelManagerReadArgs, SimpleArcChannelManager,
+    ChainParameters, ChannelManagerReadArgs, SimpleArcChannelManager, RGB_MPP_TOTAL_TLV_TYPE,
 };
 use lightning::ln::msgs::SocketAddress;
 use lightning::ln::peer_handler::{
@@ -84,7 +84,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::BufReader;
 use std::net::ToSocketAddrs;
 use std::net::{SocketAddr, TcpListener};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
@@ -197,6 +197,7 @@ pub(crate) struct PaymentInfo {
     pub(crate) expires_at: Option<u64>,
     pub(crate) description: Option<String>,
     pub(crate) description_hash: Option<[u8; 32]>,
+    pub(crate) rgb_payment: Option<(ContractId, u64)>,
 }
 
 impl_writeable_tlv_based!(PaymentInfo, {
@@ -210,6 +211,7 @@ impl_writeable_tlv_based!(PaymentInfo, {
     (14, expires_at, option),
     (16, description, option),
     (18, description_hash, option),
+    (20, rgb_payment, option),
 });
 
 pub(crate) struct InboundPaymentInfoStorage {
@@ -434,6 +436,7 @@ impl UnlockedAppState {
                     expires_at: None,
                     description: None,
                     description_hash: None,
+                    rgb_payment: None,
                 });
             }
         }
@@ -609,34 +612,6 @@ pub(crate) type OutputSweeper = ldk_sweep::OutputSweeper<
     Arc<FilesystemLogger>,
     Arc<RgbOutputSpender>,
 >;
-
-fn find_and_update_rgb_chan_amt(ldk_data_dir: &Path, payment_hash: &PaymentHash, receiver: bool) {
-    let payment_hash_str = hex_str(&payment_hash.0);
-    for entry in fs::read_dir(ldk_data_dir).unwrap() {
-        let file = entry.unwrap();
-        let file_name = file.file_name();
-        let file_name_str = file_name.to_string_lossy();
-        let mut file_path_no_ext = file.path().clone();
-        file_path_no_ext.set_extension("");
-        let file_name_str_no_ext = file_path_no_ext.file_name().unwrap().to_string_lossy();
-        if file_name_str.contains(&payment_hash_str) && file_name_str_no_ext != payment_hash_str {
-            let rgb_payment_info = parse_rgb_payment_info(&file.path());
-            let channel_id_str = file_name_str_no_ext.replace(&payment_hash_str, "");
-
-            if rgb_payment_info.swap_payment && receiver != rgb_payment_info.inbound {
-                continue;
-            }
-
-            let (offered, received) = if receiver {
-                (0, rgb_payment_info.amount)
-            } else {
-                (rgb_payment_info.amount, 0)
-            };
-            update_rgb_channel_amount(&channel_id_str, offered, received, ldk_data_dir, false);
-            break;
-        }
-    }
-}
 
 // Handle an rgb-lib error that happened while preparing a channel funding transaction in
 // FundingGenerationReady. Returns the value to propagate from the event handler: `Err(ReplayEvent)`
@@ -1032,9 +1007,9 @@ async fn handle_ldk_events(
             amount_msat,
             receiver_node_id: _,
             claim_deadline: _,
-            onion_fields: _,
+            onion_fields,
             counterparty_skimmed_fee_msat: _,
-            receiving_channel_ids: _,
+            receiving_channel_ids,
             payment_id: _,
         } => {
             tracing::info!(
@@ -1042,6 +1017,43 @@ async fn handle_ldk_events(
                 payment_hash,
                 amount_msat,
             );
+            if let Some(expected_rgb) = unlocked_state
+                .get_inbound_payments()
+                .payments
+                .get(&payment_hash)
+                .and_then(|payment| payment.rgb_payment)
+            {
+                let rgb_info_path = lightning::rgb_utils::get_rgb_payment_info_path(
+                    &payment_hash,
+                    &static_state.ldk_data_dir,
+                    true,
+                );
+                let contract_matches = rgb_info_path.exists()
+                    && parse_rgb_payment_info(&rgb_info_path).contract_id == expected_rgb.0;
+                let rgb_total_tlv = onion_fields.as_ref().and_then(|fields| {
+                    fields
+                        .custom_tlvs()
+                        .iter()
+                        .find(|(typ, _)| *typ == RGB_MPP_TOTAL_TLV_TYPE)
+                        .map(|(_, value)| value)
+                });
+                let received_total = rgb_total_tlv.and_then(|value| {
+                    <[u8; 8]>::try_from(value.as_slice())
+                        .ok()
+                        .map(u64::from_be_bytes)
+                });
+                if !contract_matches
+                    || received_total.map_or(receiving_channel_ids.len() > 1, |total| {
+                        total != expected_rgb.1
+                    })
+                {
+                    tracing::warn!("Rejecting RGB payment with an invalid total amount");
+                    unlocked_state
+                        .channel_manager
+                        .fail_htlc_backwards(&payment_hash);
+                    return Ok(());
+                }
+            }
             #[cfg(test)]
             if node_override_matches(
                 &HOLD_PAYMENT_CLAIMABLE_ON_NODE,
@@ -1090,7 +1102,7 @@ async fn handle_ldk_events(
             purpose,
             amount_msat,
             receiver_node_id,
-            htlcs: _,
+            htlcs,
             sender_intended_total_msat: _,
             onion_fields: _,
             payment_id: _,
@@ -1139,7 +1151,17 @@ async fn handle_ldk_events(
                 }
             }
 
-            find_and_update_rgb_chan_amt(&static_state.ldk_data_dir, &payment_hash, true);
+            for htlc in &htlcs {
+                if let Some((_, rgb_amount)) = htlc.rgb_payment {
+                    update_rgb_channel_amount(
+                        &htlc.channel_id.to_string(),
+                        0,
+                        rgb_amount,
+                        &static_state.ldk_data_dir,
+                        false,
+                    );
+                }
+            }
             if is_maker_swap {
                 unlocked_state.update_maker_swap_status(&payment_hash, SwapStatus::Succeeded);
             } else {
@@ -1160,8 +1182,6 @@ async fn handle_ldk_events(
             payment_id,
             ..
         } => {
-            find_and_update_rgb_chan_amt(&static_state.ldk_data_dir, &payment_hash, false);
-
             if unlocked_state.is_maker_swap(&payment_hash) {
                 tracing::info!(
                     "EVENT: successfully swapped payment with hash {} and preimage {}",
@@ -1232,7 +1252,28 @@ async fn handle_ldk_events(
                 );
             }
         }
-        Event::PaymentPathSuccessful { .. } => {}
+        Event::PaymentPathSuccessful { path, .. } => {
+            if let Some(first_hop) = path.hops.first() {
+                if let Some((_, rgb_amount)) = first_hop.rgb_payment {
+                    if let Some(channel) = unlocked_state
+                        .channel_manager
+                        .list_channels()
+                        .into_iter()
+                        .find(|details| {
+                            details.get_outbound_payment_scid() == Some(first_hop.short_channel_id)
+                        })
+                    {
+                        update_rgb_channel_amount(
+                            &channel.channel_id.to_string(),
+                            rgb_amount,
+                            0,
+                            &static_state.ldk_data_dir,
+                            false,
+                        );
+                    }
+                }
+            }
+        }
         Event::PaymentPathFailed { .. } => {}
         Event::ProbeSuccessful { .. } => {}
         Event::ProbeFailed { .. } => {}

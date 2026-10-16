@@ -882,9 +882,13 @@ async fn issue_asset_ifa(node_address: SocketAddr) -> AssetIFA {
 }
 
 async fn issue_asset_nia(node_address: SocketAddr) -> AssetNIA {
+    issue_asset_nia_with_amounts(node_address, vec![ISSUE_AMT]).await
+}
+
+async fn issue_asset_nia_with_amounts(node_address: SocketAddr, amounts: Vec<u64>) -> AssetNIA {
     println!("issuing NIA asset on node {node_address}");
     let payload = IssueAssetNIARequest {
-        amounts: vec![ISSUE_AMT],
+        amounts,
         ticker: s!("USDT"),
         name: s!("Tether"),
         precision: 0,
@@ -1560,7 +1564,8 @@ async fn open_channel_raw(
     let t_0 = OffsetDateTime::now_utc();
     loop {
         let net_info = network_info(node_address).await;
-        if net_info.height == blockcount {
+        // Concurrent channel openings can mine past the height captured above.
+        if net_info.height >= blockcount {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -2396,6 +2401,7 @@ mod payment;
 mod push_asset_amount_above_chan_amt;
 mod refuse_high_fees;
 mod restart;
+mod rgb_mpp;
 mod send_receive;
 mod swap_assets_liquidity_both_ways;
 mod swap_reverse_same_channel;

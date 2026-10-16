@@ -233,8 +233,12 @@ pub(crate) async fn app(args: UserArgs) -> Result<(Router, Arc<AppState>), AppEr
             app_state.clone(),
             conditional_auth_middleware,
         ))
-        .layer(CorsLayer::permissive())
-        .with_state(app_state.clone());
+        .layer(CorsLayer::permissive());
+
+    #[cfg(test)]
+    let router = router.route("/test/timertick", post(crate::routes::test_timer_tick));
+
+    let router = router.with_state(app_state.clone());
 
     Ok((router, app_state))
 }
