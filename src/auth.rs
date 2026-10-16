@@ -16,7 +16,7 @@ use crate::{
 
 const REVOKED_TOKENS_FILE: &str = "revoked_tokens.txt";
 
-const READ_ONLY_OPS: [&str; 25] = [
+const READ_ONLY_OPS: [&str; 27] = [
     "/assetbalance",
     "/assetmetadata",
     "/btcbalance",
@@ -42,6 +42,8 @@ const READ_ONLY_OPS: [&str; 25] = [
     "/listunspents",
     "/networkinfo",
     "/nodeinfo",
+    "/routing/capabilities",
+    "/routing/telemetry",
 ];
 
 pub(crate) fn check_auth_args(

@@ -12,6 +12,8 @@ async fn pay_retrying_route(node_address: SocketAddr, invoice: String) -> String
     let t_0 = OffsetDateTime::now_utc();
     loop {
         let payload = SendPaymentRequest {
+            routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"}))
+                .unwrap(),
             invoice: invoice.clone(),
             amt_msat: None,
             asset_id: None,

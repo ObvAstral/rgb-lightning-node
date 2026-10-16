@@ -272,6 +272,7 @@ async fn zero_amount_invoice() {
     let payment_amount = 5000u64;
     println!("Paying zero-amount invoice from node {node1_addr} with amount {payment_amount}");
     let payload = SendPaymentRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         invoice: invoice.clone(),
         amt_msat: Some(payment_amount),
         asset_id: None,
@@ -375,6 +376,7 @@ async fn zero_amount_invoice() {
     assert_eq!(decoded_with_amount.asset_amount, Some(50));
 
     let payload = SendPaymentRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         invoice: invoice_with_amount,
         amt_msat: Some(3_000_000),
         asset_id: None,
@@ -401,6 +403,7 @@ async fn zero_amount_invoice() {
 
     // Attempting to pay without both RGB fields should fail.
     let payload = SendPaymentRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         invoice: invoice_without_amount.clone(),
         amt_msat: Some(3_000_000),
         asset_id: None,
@@ -422,6 +425,7 @@ async fn zero_amount_invoice() {
 
     // Providing an invalid RGB asset_id format should fail.
     let payload = SendPaymentRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         invoice: invoice_without_amount.clone(),
         amt_msat: Some(3_000_000),
         asset_id: Some(s!("not-a-valid-contract-id")),
@@ -444,6 +448,7 @@ async fn zero_amount_invoice() {
     // Providing a different but valid RGB asset_id should fail with contract mismatch.
     let other_asset_id = issue_asset_nia(node1_addr).await.asset_id;
     let payload = SendPaymentRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         invoice: invoice_without_amount.clone(),
         amt_msat: Some(3_000_000),
         asset_id: Some(other_asset_id),
@@ -465,6 +470,7 @@ async fn zero_amount_invoice() {
 
     // Providing the RGB fields in sendpayment should succeed.
     let payload = SendPaymentRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         invoice: invoice_without_amount,
         amt_msat: Some(3_000_000),
         asset_id: Some(asset_id),

@@ -17,6 +17,7 @@ mod ldk_chain_backend;
 mod rgb;
 mod rgb_file_transfer;
 mod routes;
+mod routing;
 mod swap;
 mod utils;
 
@@ -68,8 +69,8 @@ use crate::routes::{
     list_transactions, list_transfers, list_unspents, ln_invoice, lock, maker_execute, maker_init,
     network_info, node_info, open_channel, post_asset_media, provide_out_of_band_ack,
     provide_out_of_band_consignment, refresh_transfers, restore, revoke_token, rgb_invoice,
-    send_btc, send_onion_message, send_payment, send_rgb, shutdown, sign_message, sync, taker,
-    unlock,
+    routing_capabilities, routing_telemetry, send_btc, send_onion_message, send_payment, send_rgb,
+    shutdown, sign_message, sync, taker, unlock,
 };
 use crate::utils::{start_daemon, AppState, LOGS_DIR};
 
@@ -204,6 +205,8 @@ pub(crate) async fn app(args: UserArgs) -> Result<(Router, Arc<AppState>), AppEr
         .route("/rgbinvoice", post(rgb_invoice))
         .route("/sendbtc", post(send_btc))
         .route("/sendonionmessage", post(send_onion_message))
+        .route("/routing/capabilities", get(routing_capabilities))
+        .route("/routing/telemetry", get(routing_telemetry))
         .route("/sendpayment", post(send_payment))
         .route("/sendrgb", post(send_rgb))
         .route("/shutdown", post(shutdown))

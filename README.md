@@ -25,6 +25,16 @@ channels,
 [here](https://github.com/RGB-Tools/rust-lightning/compare/v0.2.2...rgb)
 a comparison with `v0.2.2`, the version we applied the changes to.
 
+## Explicit routing selection
+
+Lightning payments now require an explicit `routing.algorithm` in the request.
+Supported values are `ldk_dijkstra`, `yen`, `min_cost_flow`, and
+`multi_objective`. There is no default algorithm or automatic fallback.
+For example: `{"invoice":"<invoice>","routing":{"algorithm":"yen"}}`.
+Keysend and swap execution also require the routing policy. See
+[per-payment routing](docs/routing.md) for payloads, planner limits, policy
+persistence, telemetry and tests.
+
 ## Install
 
 Clone the project, including (shallow) submodules:
@@ -286,6 +296,8 @@ The node currently exposes the following APIs:
 - `/rgbinvoice` (POST)
 - `/sendbtc` (POST)
 - `/sendonionmessage` (POST)
+- `/routing/capabilities` (GET)
+- `/routing/telemetry` (GET)
 - `/sendpayment` (POST)
 - `/sendrgb` (POST)
 - `/shutdown` (POST)

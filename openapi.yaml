@@ -764,6 +764,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MakerInitResponse'
+  /routing/capabilities:
+    get:
+      tags: [Payments]
+      summary: List routing algorithms and explicit-selection requirements
+      responses:
+        '200':
+          description: Routing capabilities; no default algorithm or automatic fallback
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requires_explicit_algorithm:
+                    const: true
+                  algorithms:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RoutingAlgorithm'
+  /routing/telemetry:
+    get:
+      tags: [Payments]
+      summary: Read up to 1024 recent routing decisions and payment outcomes
+      description: Requires an unlocked node. The current process keeps recent events in memory; the durable history is in .ldk/routing-events.jsonl.
+      responses:
+        '200':
+          description: Recent routing events in chronological order
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoutingEvent'
   /networkinfo:
     get:
       tags:
@@ -2248,9 +2280,12 @@ components:
     KeysendRequest:
       type: object
       required:
+        - routing
         - dest_pubkey
         - amt_msat
       properties:
+        routing:
+          $ref: '#/components/schemas/RoutingPolicy'
         dest_pubkey:
           type: string
           example: 03b79a4bc1ec365524b4fab9a39eb133753646babb5a1da5c4bc94c53110b7795d
@@ -2523,10 +2558,13 @@ components:
     MakerExecuteRequest:
       type: object
       required:
+        - routing
         - swapstring
         - payment_secret
         - taker_pubkey
       properties:
+        routing:
+          $ref: '#/components/schemas/RoutingPolicy'
         swapstring:
           type: string
           example: 30/rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ8/10/rgb:icfqnK9y-wObZKTu-XJcDL98-sKbE5Mh-OuDJhiI-brRJrzE/1715896416/9d342c6ba006e24abee84a2e034a22d5e30c1f2599fb9c3574d46d3cde3d65a2
@@ -3122,11 +3160,136 @@ components:
         data:
           type: string
           example: message to send
+    RoutingAlgorithm:
+      type: string
+      enum: [ldk_dijkstra, yen, min_cost_flow, multi_objective]
+      description: Must be explicitly selected by the caller. No default or automatic fallback.
+    RoutingPolicy:
+      type: object
+      additionalProperties: false
+      required: [algorithm]
+      properties:
+        algorithm:
+          $ref: '#/components/schemas/RoutingAlgorithm'
+        max_fee_msat:
+          type: [integer, 'null']
+          minimum: 0
+          description: Total fee cap across all attempts. Omission retains the LDK payment fee budget.
+        max_paths:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 32
+          description: Tightens the payment path limit. Swap legs always use a single path.
+        max_cltv_delta:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 2016
+        excluded_nodes:
+          type: array
+          maxItems: 256
+          items:
+            type: string
+            pattern: '^(02|03)[0-9a-fA-F]{64}$'
+        excluded_channels:
+          type: array
+          maxItems: 256
+          items:
+            type: integer
+            minimum: 0
+        max_candidates:
+          type: integer
+          minimum: 1
+          maximum: 256
+          default: 32
+          description: K for Yen, label/candidate limit for multi-objective, augmentation limit for min-cost flow.
+        max_expansions:
+          type: integer
+          minimum: 1
+          maximum: 2000000
+          default: 100000
+        timeout_ms:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          default: 1000
+          description: Cooperative search budget for the alternative planners and their graph snapshot. LDK search is not preempted.
+        weights:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [fee, reliability, cltv, hops]
+          properties:
+            fee:
+              type: integer
+              minimum: 0
+              maximum: 1000000
+            reliability:
+              type: integer
+              minimum: 0
+              maximum: 1000000
+            cltv:
+              type: integer
+              minimum: 0
+              maximum: 1000000
+            hops:
+              type: integer
+              minimum: 0
+              maximum: 1000000
+          description: Required only for multi_objective; at least one weight must be positive. Raw metrics are msat fees, LDK penalty msat, CLTV blocks and hops; reliability is not an RGB success probability.
+      allOf:
+        - if:
+            properties:
+              algorithm:
+                const: multi_objective
+          then:
+            required: [weights]
+            properties:
+              weights:
+                type: object
+                anyOf:
+                  - properties:
+                      fee: {minimum: 1}
+                  - properties:
+                      reliability: {minimum: 1}
+                  - properties:
+                      cltv: {minimum: 1}
+                  - properties:
+                      hops: {minimum: 1}
+          else:
+            properties:
+              weights:
+                type: 'null'
+    RoutingEvent:
+      type: object
+      properties:
+        timestamp_ms:
+          type: integer
+        payment_id:
+          type: [string, 'null']
+        algorithm:
+          $ref: '#/components/schemas/RoutingAlgorithm'
+        kind:
+          type: string
+          enum: [route_planned, route_failed, path_succeeded, path_failed, payment_succeeded, payment_failed]
+        elapsed_us:
+          type: integer
+        paths:
+          type: integer
+        fee_msat:
+          type: [integer, 'null']
+        amount_msat:
+          type: [integer, 'null']
+        rgb_amount:
+          type: [integer, 'null']
+        error:
+          type: [string, 'null']
     SendPaymentRequest:
       type: object
       required:
+        - routing
         - invoice
       properties:
+        routing:
+          $ref: '#/components/schemas/RoutingPolicy'
         invoice:
           type: string
           example: lnbcrt30u1pjv6yzndqud3jxktt5w46x7unfv9kz6mn0v3jsnp4qdpc280eur52luxppv6f3nnj8l6vnd9g2hnv3qv6mjhmhvlzf6327pp5tjjasx6g9dqptea3fhm6yllq5wxzycnnvp8l6wcq3d6j2uvpryuqsp5l8az8x3g8fe05dg7cmgddld3da09nfjvky8xftwsk4cj8p2l7kfq9qyysgqcqpcxqzdylzlwfnkyw3jv344x4rzwgkk53ng0fhxy5rdduk4g5tpvea8xa6rfckkza35va28xjn2tqkhgarcxep5umm4x5k56wfcdvu95eq7qzp20vrl4xz76syapsa3c09j7lg5gerkaj63llj0ark7ph8hfketn6fkqzm8laf66dhsncm23wkwm5l5377we9e8lnlknnkwje5eefkccusqm6rqt8

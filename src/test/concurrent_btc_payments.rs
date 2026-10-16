@@ -74,6 +74,7 @@ async fn concurrent_btc_payments() {
 
     // send payments
     let payload_1 = SendPaymentRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         invoice: invoice_1.clone(),
         amt_msat: None,
         asset_id: None,
@@ -89,6 +90,7 @@ async fn concurrent_btc_payments() {
         .await
         .unwrap();
     let payload_2 = SendPaymentRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         invoice: invoice_2.clone(),
         amt_msat: None,
         asset_id: None,

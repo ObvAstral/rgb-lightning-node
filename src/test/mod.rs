@@ -992,6 +992,7 @@ async fn keysend_raw(
     );
     let amt_msat = amt_msat.unwrap_or(3000000);
     let payload = KeysendRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         dest_pubkey: dest_pubkey.to_string(),
         amt_msat,
         asset_id: asset_id.map(|a| a.to_string()),
@@ -1294,6 +1295,7 @@ async fn maker_execute_raw(
 ) -> Response {
     println!("executing swap {swapstring} from node {node_address}");
     let payload = MakerExecuteRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         swapstring,
         payment_secret,
         taker_pubkey,
@@ -1918,6 +1920,7 @@ async fn send_btc(node_address: SocketAddr, amount: u64, address: &str) -> Strin
 async fn send_payment_raw(node_address: SocketAddr, invoice: String) -> SendPaymentResponse {
     println!("sending LN payment for invoice {invoice} from node {node_address}");
     let payload = SendPaymentRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         invoice,
         amt_msat: None,
         asset_id: None,

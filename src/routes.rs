@@ -27,7 +27,6 @@ use lightning::{
 };
 use lightning::{
     ln::channelmanager::Bolt11InvoiceParameters,
-    routing::router::RouteParametersConfig,
     types::payment::{PaymentHash, PaymentPreimage},
 };
 use lightning::{
@@ -81,6 +80,7 @@ use tokio::{
 
 #[cfg(test)]
 use crate::ldk::{node_override_matches, FORCE_PUSH_ASSET_AMOUNT_ON_NODE};
+use crate::routing::policy::{Algorithm, RoutingPolicy};
 use crate::swap::{SwapData, SwapInfo, SwapString};
 use crate::utils::{
     check_already_initialized, check_channel_id, check_password_strength, check_password_validity,
@@ -793,6 +793,7 @@ pub(crate) struct IssueAssetUDAResponse {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct KeysendRequest {
+    pub(crate) routing: RoutingPolicy,
     pub(crate) dest_pubkey: String,
     pub(crate) amt_msat: u64,
     pub(crate) asset_id: Option<String>,
@@ -903,6 +904,7 @@ pub(crate) struct LNInvoiceResponse {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct MakerExecuteRequest {
+    pub(crate) routing: RoutingPolicy,
     pub(crate) swapstring: String,
     pub(crate) payment_secret: String,
     pub(crate) taker_pubkey: String,
@@ -1230,6 +1232,7 @@ pub(crate) struct SendOnionMessageRequest {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct SendPaymentRequest {
+    pub(crate) routing: RoutingPolicy,
     pub(crate) invoice: String,
     pub(crate) amt_msat: Option<u64>,
     pub(crate) asset_id: Option<String>,
@@ -2460,6 +2463,11 @@ pub(crate) async fn keysend(
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
 
+        payload
+            .routing
+            .validate()
+            .map_err(|e| APIError::InvalidRequest(e.into()))?;
+
         let dest_pubkey = match hex_str_to_compressed_pubkey(&payload.dest_pubkey) {
             Some(pk) => pk,
             None => return Err(APIError::InvalidPubkey),
@@ -2490,11 +2498,14 @@ pub(crate) async fn keysend(
             }
         };
 
-        let route_params = RouteParameters::from_payment_params_and_value(
-            PaymentParameters::for_keysend(dest_pubkey, 40, rgb_payment.is_some()),
-            amt_msat,
-            rgb_payment,
-        );
+        let route_params =
+            payload
+                .routing
+                .constrain(&RouteParameters::from_payment_params_and_value(
+                    PaymentParameters::for_keysend(dest_pubkey, 40, rgb_payment.is_some()),
+                    amt_msat,
+                    rgb_payment,
+                ));
         let recipient_onion = if rgb_payment.is_some() {
             RecipientOnionFields::secret_only(PaymentSecret(
                 unlocked_state.keys_manager.get_secure_random_bytes(),
@@ -2503,6 +2514,9 @@ pub(crate) async fn keysend(
             RecipientOnionFields::spontaneous_empty()
         };
         let created_at = get_current_timestamp();
+        unlocked_state
+            .router
+            .register(payment_id, &payload.routing)?;
         unlocked_state.add_outbound_payment(
             payment_id,
             PaymentInfo {
@@ -2552,6 +2566,14 @@ pub(crate) async fn keysend(
             }
         };
 
+        if matches!(status, HTLCStatus::Failed) {
+            unlocked_state.router.outcome(
+                payment_id,
+                "payment_failed",
+                None,
+                Some("Payment submission failed".into()),
+            );
+        }
         Ok(Json(KeysendResponse {
             payment_hash: hex_str(&payment_hash.0),
             payment_preimage: hex_str(&payment_preimage.0),
@@ -3100,6 +3122,11 @@ pub(crate) async fn maker_execute(
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
 
+        payload
+            .routing
+            .validate()
+            .map_err(|e| APIError::InvalidRequest(e.into()))?;
+
         let swapstring = SwapString::from_str(&payload.swapstring)
             .map_err(|e| APIError::InvalidSwapString(payload.swapstring.clone(), e.to_string()))?;
         let payment_secret = hex_str_to_vec(&payload.payment_secret)
@@ -3144,13 +3171,13 @@ pub(crate) async fn maker_execute(
                     src_node_id: details.counterparty.node_id,
                     short_channel_id: details.short_channel_id.unwrap(),
                     cltv_expiry_delta: config.cltv_expiry_delta,
-                    htlc_maximum_msat: None,
-                    htlc_minimum_msat: None,
+                    htlc_maximum_msat: details.inbound_htlc_maximum_msat,
+                    htlc_minimum_msat: details.inbound_htlc_minimum_msat,
                     fees: RoutingFees {
                         base_msat: config.fee_base_msat,
                         proportional_millionths: config.fee_proportional_millionths,
                     },
-                    htlc_maximum_rgb: None,
+                    htlc_maximum_rgb: Some(details.inbound_htlc_maximum_rgb),
                 }])
             })
             .collect();
@@ -3171,6 +3198,7 @@ pub(crate) async fn maker_execute(
             },
             rgb_payment,
             vec![],
+            &payload.routing,
         );
 
         let rgb_payment = swap_info
@@ -3189,6 +3217,7 @@ pub(crate) async fn maker_execute(
             },
             rgb_payment,
             receive_hints,
+            &payload.routing,
         );
 
         let (mut first_leg, mut second_leg) = match (first_leg, second_leg) {
@@ -3235,7 +3264,12 @@ pub(crate) async fn maker_execute(
             .map(|hop| hop.fee_msat)
             .sum::<u64>();
 
-        if total_fee >= MAX_SWAP_FEE_MSAT {
+        if total_fee >= MAX_SWAP_FEE_MSAT
+            || payload
+                .routing
+                .max_fee_msat
+                .is_some_and(|limit| total_fee > limit)
+        {
             return Err(APIError::FailedPayment(format!(
                 "Fee too high: {total_fee}"
             )));
@@ -3273,6 +3307,9 @@ pub(crate) async fn maker_execute(
             );
         }
 
+        unlocked_state
+            .router
+            .register(PaymentId(swapstring.payment_hash.0), &payload.routing)?;
         unlocked_state.update_maker_swap_status(&swapstring.payment_hash, SwapStatus::Pending);
 
         let payment_hash: PaymentHash = payment_preimage.into();
@@ -4045,10 +4082,15 @@ pub(crate) async fn send_payment(
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
 
+        payload.routing.validate().map_err(|e| APIError::InvalidRequest(e.into()))?;
+
         let mut status = HTLCStatus::Pending;
         let created_at = get_current_timestamp();
 
         let (payment_id, payment_hash, payment_secret) = if let Ok(offer) = Offer::from_str(&payload.invoice) {
+            if payload.routing.algorithm != Algorithm::LdkDijkstra || !payload.routing.excluded_nodes.is_empty() || !payload.routing.excluded_channels.is_empty() {
+                return Err(APIError::InvalidRequest("BOLT12 offers require explicit ldk_dijkstra without hard exclusions; alternative planners support clear BOLT11/keysend recipients".into()));
+            }
             let random_bytes = unlocked_state.keys_manager.get_secure_random_bytes();
             let payment_id = PaymentId(random_bytes);
 
@@ -4071,6 +4113,7 @@ pub(crate) async fn send_payment(
 
             let secret = None;
 
+            unlocked_state.router.register(payment_id, &payload.routing)?;
             unlocked_state.add_outbound_payment(
                 payment_id,
                 PaymentInfo {
@@ -4090,6 +4133,7 @@ pub(crate) async fn send_payment(
 
             let params = OptionalOfferPaymentParams {
                 retry_strategy: Retry::Timeout(Duration::from_secs(10)),
+                route_params_config: payload.routing.config(),
                 ..Default::default()
             };
             let pay = unlocked_state.channel_manager
@@ -4167,6 +4211,7 @@ pub(crate) async fn send_payment(
 
             let secret = payment_secret;
             let (description, description_hash) = description_fields(&invoice);
+            unlocked_state.router.register(payment_id, &payload.routing)?;
             unlocked_state.add_outbound_payment(
                 payment_id,
                 PaymentInfo {
@@ -4199,7 +4244,7 @@ pub(crate) async fn send_payment(
                 &invoice,
                 payment_id,
                 Some(amt_msat),
-                RouteParametersConfig::default(),
+                payload.routing.config(),
                 Retry::Timeout(Duration::from_secs(10)),
             ) {
                 Ok(_) => {
@@ -4220,6 +4265,9 @@ pub(crate) async fn send_payment(
             (payment_id, Some(payment_hash), secret)
         };
 
+        if matches!(status, HTLCStatus::Failed) {
+            unlocked_state.router.outcome(payment_id, "payment_failed", None, Some("Payment submission failed".into()));
+        }
         Ok(Json(SendPaymentResponse {
             payment_id: hex_str(&payment_id.0),
             payment_hash: payment_hash.map(|h| hex_str(&h.0)),
@@ -4395,4 +4443,23 @@ pub(crate) async fn unlock(
         Ok(Json(EmptyResponse {}))
     })
     .await
+}
+
+/// Discover supported planners. The algorithm must always be supplied by the caller.
+pub(crate) async fn routing_capabilities() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "schema_version": 1, "requires_explicit_algorithm": true,
+        "algorithms": ["ldk_dijkstra", "yen", "min_cost_flow", "multi_objective"],
+        "blinded_algorithms": ["ldk_dijkstra"],
+        "multi_objective_requires_weights": true,
+        "automatic_algorithm_fallback": false,
+        "policy_persisted_across_restarts": true
+    }))
+}
+
+pub(crate) async fn routing_telemetry(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<crate::routing::telemetry::RoutingEvent>>, APIError> {
+    let guard = state.check_unlocked().await?;
+    Ok(Json(guard.as_ref().unwrap().router.recent_events()))
 }

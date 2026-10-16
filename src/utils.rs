@@ -6,7 +6,7 @@ use futures::Future;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::types::ChannelId;
 use lightning::routing::router::{
-    Payee, PaymentParameters, Route, RouteHint, RouteParameters, Router as _,
+    Payee, PaymentParameters, Route, RouteHint, RouteParameters,
     DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE,
 };
 use lightning::{
@@ -430,6 +430,7 @@ pub(crate) fn get_route(
     final_value_msat: Option<u64>,
     rgb_payment: Option<(ContractId, u64)>,
     hints: Vec<RouteHint>,
+    routing: &crate::routing::policy::RoutingPolicy,
 ) -> Option<Route> {
     let inflight_htlcs = channel_manager.compute_inflight_htlcs();
     let usable_channels;
@@ -445,7 +446,7 @@ pub(crate) fn get_route(
                 None => true,
             })
             .collect::<Vec<_>>();
-        (!first_hops.is_empty()).then_some(first_hops)
+        Some(first_hops)
     } else {
         None
     };
@@ -464,7 +465,7 @@ pub(crate) fn get_route(
         previously_failed_channels: vec![],
         previously_failed_blinded_path_idxs: vec![],
     };
-    let route = router.find_route(
+    let route = router.for_policy(
         &start,
         &RouteParameters {
             payment_params,
@@ -474,6 +475,7 @@ pub(crate) fn get_route(
         },
         first_hops.as_deref(),
         inflight_htlcs,
+        routing,
     );
 
     route.ok()

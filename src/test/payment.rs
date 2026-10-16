@@ -276,6 +276,7 @@ async fn same_invoice_twice_and_expired_inbound_payments() {
     // try to re-pay the same invoice
     println!("sending LN payment for invoice {invoice} from node {node1_addr}");
     let payload = SendPaymentRequest {
+        routing: serde_json::from_value(serde_json::json!({"algorithm": "ldk_dijkstra"})).unwrap(),
         invoice: invoice.clone(),
         amt_msat: None,
         asset_id: None,

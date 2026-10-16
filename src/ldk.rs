@@ -17,7 +17,7 @@ use lightning::events::{Event, PaymentFailureReason, PaymentPurpose, ReplayEvent
 use lightning::impl_writeable_tlv_based;
 use lightning::ln::channelmanager::{self, PaymentId, RecentPaymentDetails};
 use lightning::ln::channelmanager::{
-    ChainParameters, ChannelManagerReadArgs, SimpleArcChannelManager, RGB_MPP_TOTAL_TLV_TYPE,
+    ChainParameters, ChannelManagerReadArgs, RGB_MPP_TOTAL_TLV_TYPE,
 };
 use lightning::ln::msgs::SocketAddress;
 use lightning::ln::peer_handler::{
@@ -34,8 +34,7 @@ use lightning::rgb_utils::{
 };
 use lightning::routing::gossip;
 use lightning::routing::gossip::{NodeId, P2PGossipSync};
-use lightning::routing::router::DefaultRouter;
-use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+use lightning::routing::scoring::ProbabilisticScorer;
 use lightning::routing::utxo::UtxoLookup;
 use lightning::sign::{
     EntropySource, InMemorySigner, KeysManager, NodeSigner, OutputSpender,
@@ -546,17 +545,19 @@ pub(crate) type PeerManager = LdkPeerManager<
 
 pub(crate) type Scorer = ProbabilisticScorer<Arc<NetworkGraph>, Arc<FilesystemLogger>>;
 
-pub(crate) type Router = DefaultRouter<
-    Arc<NetworkGraph>,
-    Arc<FilesystemLogger>,
-    Arc<KeysManager>,
-    Arc<RwLock<Scorer>>,
-    ProbabilisticScoringFeeParameters,
-    Scorer,
->;
+pub(crate) type Router = crate::routing::adaptive_router::AdaptiveRouter;
 
-pub(crate) type ChannelManager =
-    SimpleArcChannelManager<ChainMonitor, DynBroadcaster, DynFeeEstimator, FilesystemLogger>;
+pub(crate) type ChannelManager = channelmanager::ChannelManager<
+    Arc<ChainMonitor>,
+    Arc<DynBroadcaster>,
+    Arc<KeysManager>,
+    Arc<KeysManager>,
+    Arc<KeysManager>,
+    Arc<DynFeeEstimator>,
+    Arc<Router>,
+    Arc<DefaultMessageRouter<Arc<NetworkGraph>, Arc<FilesystemLogger>, Arc<KeysManager>>>,
+    Arc<FilesystemLogger>,
+>;
 
 impl PeerChannelGate for ChannelManager {
     fn channel_count_with(&self, peer: &PublicKey) -> usize {
@@ -740,6 +741,36 @@ async fn handle_ldk_events(
     unlocked_state: Arc<UnlockedAppState>,
     static_state: Arc<StaticState>,
 ) -> Result<(), ReplayEvent> {
+    match &event {
+        Event::PaymentSent {
+            payment_id: Some(id),
+            fee_paid_msat,
+            ..
+        } => unlocked_state
+            .router
+            .outcome(*id, "payment_succeeded", *fee_paid_msat, None),
+        Event::PaymentFailed {
+            payment_id, reason, ..
+        } => unlocked_state.router.outcome(
+            *payment_id,
+            "payment_failed",
+            None,
+            Some(format!("{reason:?}")),
+        ),
+        Event::PaymentPathSuccessful { payment_id, .. } => {
+            unlocked_state
+                .router
+                .outcome(*payment_id, "path_succeeded", None, None)
+        }
+        Event::PaymentPathFailed {
+            payment_id: Some(id),
+            failure,
+            ..
+        } => unlocked_state
+            .router
+            .outcome(*id, "path_failed", None, Some(format!("{failure:?}"))),
+        _ => {}
+    }
     match event {
         Event::FundingGenerationReady {
             temporary_channel_id,
@@ -2194,14 +2225,14 @@ pub(crate) async fn start_ldk(
     )));
 
     // Create Routers
-    let scoring_fee_params = ProbabilisticScoringFeeParameters::default();
-    let router = Arc::new(DefaultRouter::new(
+    let router = Arc::new(Router::new(
         network_graph.clone(),
         logger.clone(),
         keys_manager.clone(),
         scorer.clone(),
-        scoring_fee_params,
-    ));
+        fs_store.clone(),
+        ldk_data_dir.clone(),
+    )?);
     let message_router = Arc::new(DefaultMessageRouter::new(
         Arc::clone(&network_graph),
         Arc::clone(&keys_manager),
