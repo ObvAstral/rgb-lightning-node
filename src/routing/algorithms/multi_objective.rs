@@ -1,4 +1,4 @@
-//! Bounded multi-label search with Pareto dominance on fee, LDK penalty, CLTV and hops.
+//! Bounded multi-label search with Pareto ranking on fee, LDK penalty, CLTV and hops.
 use super::{graph::Graph, EdgePath, SearchBudget};
 use crate::routing::policy::{ObjectiveWeights, RoutingPolicy};
 use lightning::routing::router::RouteParameters;
@@ -12,14 +12,6 @@ struct Label {
 }
 fn dominates(a: &[u128; 4], b: &[u128; 4]) -> bool {
     a.iter().zip(b).all(|(a, b)| a <= b) && a.iter().zip(b).any(|(a, b)| a < b)
-}
-fn dominates_prefix(g: &Graph, a: &Label, b: &Label) -> bool {
-    dominates(&a.objective, &b.objective)
-        && a.path.iter().all(|i| {
-            b.path
-                .iter()
-                .any(|j| g.edges[*i].target == g.edges[*j].target)
-        })
 }
 fn weighted(v: &[u128; 4], w: &ObjectiveWeights) -> u128 {
     v[0] * w.fee as u128
@@ -93,20 +85,12 @@ pub(crate) fn paths(
                 path,
                 objective,
             };
-            // A dominating prefix must allow the same loopless continuations.
-            // Completed alternatives remain available for MPP allocation.
-            if edge.target != g.target
-                && at_node[edge.target]
-                    .iter()
-                    .any(|i| dominates_prefix(g, &labels[*i], &next))
-            {
-                continue;
-            }
+            // Objective dominance alone cannot discard a prefix: different channels
+            // provide independent MPP capacity, and a cheaper prefix may not carry
+            // a full single-path payment. Keep alternatives within the label cap;
+            // apply Pareto ranking to completed paths before allocation.
             let id = labels.len();
             labels.push(next);
-            if edge.target != g.target {
-                at_node[edge.target].retain(|i| !dominates_prefix(g, &labels[id], &labels[*i]));
-            }
             if at_node[edge.target].len() >= policy.max_candidates {
                 let worst = *at_node[edge.target]
                     .iter()

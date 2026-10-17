@@ -30,10 +30,10 @@ use lightning_persister::fs_store::FilesystemStore;
 use rgb_lib::ContractId;
 use std::sync::{Arc, RwLock};
 
-fn key(i: u8) -> PublicKey {
+pub(super) fn key(i: u8) -> PublicKey {
     PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[i; 32]).unwrap())
 }
-fn policy(algorithm: &str) -> RoutingPolicy {
+pub(super) fn policy(algorithm: &str) -> RoutingPolicy {
     let mut v =
         serde_json::json!({"algorithm":algorithm, "max_fee_msat":100000, "timeout_ms":10000});
     if algorithm == "multi_objective" {
@@ -41,14 +41,23 @@ fn policy(algorithm: &str) -> RoutingPolicy {
     }
     serde_json::from_value(v).unwrap()
 }
-fn params(amount: u64, rgb: Option<u64>) -> RouteParameters {
+pub(super) fn params(amount: u64, rgb: Option<u64>) -> RouteParameters {
     RouteParameters::from_payment_params_and_value(
         PaymentParameters::for_keysend(key(4), 18, true),
         amount,
         rgb.map(|r| (ContractId::from([7; 32]), r)),
     )
 }
-fn edge(g: &mut Graph, from: u8, to: u8, scid: u64, btc: u64, rgb: u64, fee: u32, penalty: u64) {
+pub(super) fn edge(
+    g: &mut Graph,
+    from: u8,
+    to: u8,
+    scid: u64,
+    btc: u64,
+    rgb: u64,
+    fee: u32,
+    penalty: u64,
+) {
     let source = g.node(key(from), NodeFeatures::empty());
     let target = g.node(key(to), NodeFeatures::empty());
     g.add(Edge {
@@ -69,7 +78,7 @@ fn edge(g: &mut Graph, from: u8, to: u8, scid: u64, btc: u64, rgb: u64, fee: u32
         announced: false,
     });
 }
-fn diamond() -> Graph {
+pub(super) fn diamond() -> Graph {
     let mut g = Graph::new(key(1), key(4), 18, true);
     edge(&mut g, 1, 2, 12, 600, 60, 0, 0);
     edge(&mut g, 2, 4, 24, 600, 60, 0, 0);
@@ -77,7 +86,7 @@ fn diamond() -> Graph {
     edge(&mut g, 3, 4, 34, 400, 40, 0, 0);
     g
 }
-fn run(
+pub(super) fn run(
     g: &Graph,
     p: &RouteParameters,
     policy: &RoutingPolicy,

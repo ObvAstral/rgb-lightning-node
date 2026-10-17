@@ -4,6 +4,9 @@ mod min_cost_flow;
 mod multi_objective;
 mod yen;
 
+#[cfg(test)]
+mod tests;
+
 use super::policy::{Algorithm, RoutingPolicy};
 use graph::Graph;
 use lightning::routing::router::{Path, Route, RouteHop, RouteParameters};

@@ -60,7 +60,7 @@ channel persistence or Lightning onion/wire formats.
 | `ldk_dijkstra` | Existing RGB-aware reverse Dijkstra/MPP heuristic, followed by common validation | Supports clear and blinded recipients. LDK search itself is not preempted by `timeout_ms`. |
 | `yen` | Yen's K shortest loopless paths; bounded uniform-cost spur searches; greedy allocation across candidates | Additive search cost estimates fees and LDK penalties at the requested amount. K and search budgets limit exploration. |
 | `min_cost_flow` | Integral successive shortest augmenting paths with reverse residual arcs; positive flow decomposed into HTLC paths | Linear approximation of BTC/RGB proportional flow. Costs amortize base fees; a BTC fee reserve is used. Fixed fees, HTLC minima, rounding, CLTV and path count can make the final flow invalid. Such a flow is rejected. |
-| `multi_objective` | Bounded multi-label Pareto search over fee, LDK penalty, CLTV and hop count; caller weights rank solutions | Limited labels/candidates and greedy allocation can miss a feasible or better split. |
+| `multi_objective` | Bounded multi-label search over fee, LDK penalty, CLTV and hop count; completed paths are Pareto ranked, then ordered by caller weights | Prefixes with different channel capacities remain available within the per-node label limit. Limited labels/candidates and greedy allocation can miss a feasible or better split. |
 
 The three alternatives support clear BOLT11 and keysend recipients, including
 private invoice hints. BOLT12 offers require explicit `ldk_dijkstra`; hard node
@@ -114,13 +114,33 @@ the existing API authentication and read-only permissions.
 Run the infrastructure-independent routing tests with:
 
 ```sh
-cargo test --locked --no-default-features --features electrum,block-sync routing::tests
+cargo test --locked --no-default-features --features electrum,block-sync routing::
 ```
 
 Tests cover explicit selection, policy restart/immutability, RGB and BTC splits,
-rounding, shared capacities, fee/CLTV/HTLC limits, residual flow cancellation,
-Pareto weights, bounded search, telemetry, tampered-route rejection, and an
-exhaustive reference for min-cost flow on 64 small linear networks.
+rounding, shared capacities, inclusive fee/CLTV/HTLC/hop limits, residual flow
+cancellation, Pareto weights, expansion/candidate/deadline limits, telemetry,
+tampered-route rejection, disconnected and cyclic graphs, parallel channels,
+zero amounts, compounded proportional fees, and `u64` arithmetic boundaries.
+
+Independent reference searches in `src/routing/algorithms/tests.rs` also check:
+
+- Yen's exact ordered K shortest simple paths on all 4,096 directed topologies
+  with four nodes, varying K, hop/CLTV limits, fees, and BTC/RGB eligibility.
+- Multi-objective selection against exhaustive simple paths on 128 small
+  topologies, with five weight combinations and BTC/RGB eligibility. With enough
+  labels, the first candidate must be Pareto optimal and minimize weighted cost.
+- Min-cost flow against exhaustive integer path assignments for all 2,187
+  capacity assignments in `{0,1,2}` on a seven-edge network, with demands 1, 2,
+  and 3. The original 64 generated linear networks remain covered as well.
+
+These references are exhaustive within their finite domains. They do not prove
+correctness on arbitrary networks or global optimality with nonlinear fees,
+HTLC minima, proportional BTC/RGB rounding, or restricted search budgets.
+The HTTP API test opens a loopback socket; the algorithm tests need no sockets.
+To run only the algorithm suite, use the same command with the filter
+`routing::algorithms::tests`.
+
 The existing regtest suite explicitly selects `ldk_dijkstra` to keep its
 baseline regression coverage. Live regtest tests require the usual services;
 their default initializer resets the regtest environment.
